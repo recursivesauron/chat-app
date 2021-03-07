@@ -1,53 +1,66 @@
 const path = require('path')
 const http = require('http')
-const hbs = require('hbs')
 const express = require('express')
 const socketio = require('socket.io')
+const {generateMessage, generateLocationMessage} = require('./utils/messages')
+const {addUser, removeUser, getUser, getUsersInRoom} = require('./utils/users')
 const port = process.env.PORT || 3000
 
 const app = express()
 const server = http.createServer(app)
 const io = socketio(server)
 
-const publicDirPath = path.join(__dirname, '../public');
-const viewsPath = path.join(__dirname, '../templates/views');
-const partialsPath = path.join(__dirname, '../templates/partials');
-
-//Setup handlebars engine and views location
-app.set('view engine', 'hbs');
-app.set('views', viewsPath);
-hbs.registerPartials(partialsPath);
+const publicDirectoryPath = path.join(__dirname, '../public')
 
 //Setup static directory to serve
-app.use(express.static(publicDirPath));
-app.use(express.json())
-
-app.get('', async (req, res) => {
-    res.render('index', {
-        text: 'Chat app'
-    })
-})
-
-// let count = 0
+app.use(express.static(publicDirectoryPath))
 
 io.on('connection', (socket) => {
     console.log('New WebSocket Connection')
-    socket.emit('message', 'Welcome!')
 
-    socket.broadcast.emit('message', 'A new user has joined')
+    socket.on('join', ({username, room}, callback) => {
+        const { error, user} = addUser({id: socket.id, room, username})
+
+        if(error){
+            return callback(error)
+        }
+
+        socket.join(user.room)
+        socket.emit('message', generateMessage('Server', 'Welcome!'))
+        socket.broadcast.to(room).emit('message', generateMessage('Server', `${user.username} has joined the channel`))
+        //socket.emit, io.emit, socket.broadcast.emit
+        //io.to.emit, socket.broadcast.to.emit
+        io.to(user.room).emit('roomData', {
+            room: user.room,
+            users: getUsersInRoom(user.room)
+        })
+        
+        callback()
+    })
 
     socket.on('sendMessage', (message, callback) => {
-        io.emit('message', message)
+        const user = getUser(socket.id)
+        io.to(user.room).emit('message', generateMessage(user.username, message))
         callback('Delivered!')
     })
 
     socket.on('sendLocation', (locationInfo, callback) => {
-        io.emit('message', 'https://google.com/maps?q=' + locationInfo.latitude + "," + locationInfo.longitude)
+        const user = getUser(socket.id)
+        const locationMessage = generateLocationMessage(user.username, 'https://google.com/maps?q=' + locationInfo.latitude + "," + locationInfo.longitude)
+        io.to(user.room).emit('locationMessage', locationMessage)
         callback()
     })
 
     socket.on('disconnect', () => {
-        io.emit('message', 'A user has left the chat')
+        const user = removeUser(socket.id)
+        
+        if(user){
+            io.to(user.room).emit('message', generateMessage('Server', `${user.username} has left the chat`))
+            io.to(user.room).emit('roomData', {
+                room: user.room,
+                users: getUsersInRoom(user.room)
+            })
+        }
     })
 })
 
